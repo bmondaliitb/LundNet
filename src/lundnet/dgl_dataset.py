@@ -5,22 +5,71 @@ from __future__ import print_function
 import dgl
 import networkx as nx
 import numpy as np
-from dgl.transform import remove_self_loop
+
 from .dgl_utils import knn_graph
 from torch.utils.data import Dataset
 from .JetTree import JetTree, LundCoordinates
 from .read_data import Jets
 import torch
 import torch.nn.functional as F
+import sys
 try:
+    # `uproot3_methods` is not compatible with Python 3.12+.
+    if sys.version_info >= (3, 12):
+        raise ImportError
     from uproot_methods import TLorentzVectorArray, TLorentzVector
-except ImportError:
-    from uproot3_methods import TLorentzVectorArray, TLorentzVector
+except Exception:
+    try:
+        if sys.version_info >= (3, 12):
+            raise ImportError
+        from uproot3_methods import TLorentzVectorArray, TLorentzVector
+    except Exception:
+        from .lorentz import TLorentzVectorArray, TLorentzVector
 import time
 import pandas as pd
 
 groomer = None
 dump_number_of_nodes = False
+
+
+def _from_networkx_compat(nx_graph, node_attrs=None):
+    """Convert a NetworkX graph to a DGL graph across DGL versions."""
+    if hasattr(dgl, "from_networkx"):
+        return dgl.from_networkx(nx_graph, node_attrs=node_attrs or [])
+    try:
+        from dgl.convert import from_networkx as _from_networkx
+
+        return _from_networkx(nx_graph, node_attrs=node_attrs or [])
+    except Exception:
+        # Very old DGL: build graph then manually copy node attributes.
+        try:
+            dg = dgl.DGLGraph(nx_graph)
+        except Exception:
+            dg = dgl.DGLGraph()
+            dg.from_networkx(nx_graph)
+
+        if node_attrs:
+            for attr in node_attrs:
+                values = [nx_graph.nodes[i][attr] for i in range(nx_graph.number_of_nodes())]
+                arr = np.stack(values, axis=0)
+                dg.ndata[attr] = torch.tensor(arr, dtype=torch.float32)
+        return dg
+
+
+def remove_self_loop(g):
+    # Works for homogeneous graphs. (Most LundNet use-cases are homogeneous.)
+    u, v = g.edges()
+    mask = (u == v)
+    if mask.any():
+        eids = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+        # different DGL versions expose different APIs:
+        if hasattr(dgl, "remove_edges"):
+            g = dgl.remove_edges(g, eids)
+        else:
+            # older versions sometimes have a method
+            g.remove_edges(eids)
+    return g
+
 
 
 class DGLGraphDatasetLund(Dataset):
@@ -86,7 +135,7 @@ class DGLGraphDatasetLund(Dataset):
             # when a jet has only one particle (?)
             g.add_node(0, coordinates=np.zeros(2, dtype='float32'),
                        features=np.zeros(LundCoordinates.dimension, dtype='float32'))
-        ret = dgl.from_networkx(g, node_attrs=['coordinates', 'features'])
+        ret = _from_networkx_compat(g, node_attrs=['coordinates', 'features'])
         # print(ret.number_of_nodes())
         return ret
 

@@ -18,6 +18,20 @@ from lundnet.dgl_dataset import DGLGraphDatasetParticle, DGLGraphDatasetLund, co
 from sklearn.metrics import roc_curve
 
 
+def graph_to_device(g, dev):
+    """Move a DGL graph to a torch device across DGL versions."""
+    if dev is None or str(dev) == 'cpu':
+        return g
+    if hasattr(g, 'to'):
+        return g.to(dev)
+    if hasattr(g, 'copy_to'):
+        return g.copy_to(dev)
+    raise RuntimeError(
+        "This DGL graph type does not support device transfer (missing .to/.copy_to). "
+        "Run with --device cpu or upgrade DGL."
+    )
+
+
 def bkg_rejection_at_threshold(signal_eff, background_eff, sig_eff=0.5):
     """Background rejection at a given signal efficiency."""
     return 1 / (1 - background_eff[np.argmin(np.abs(signal_eff - sig_eff)) + 1])
@@ -171,7 +185,7 @@ def main():
                 num_examples = label.shape[0]
                 label = label.to(dev).squeeze().long()
                 opt.zero_grad()
-                logits = model(batch.batch_graph.to(dev), batch.features.to(dev))
+                logits = model(graph_to_device(batch.batch_graph, dev), batch.features.to(dev))
                 loss = loss_func(logits, label)
                 loss.backward()
                 opt.step()
@@ -211,7 +225,7 @@ def main():
                     label = batch.label
                     num_examples = label.shape[0]
                     label = label.to(dev).squeeze().long()
-                    logits = model(batch.batch_graph.to(dev), batch.features.to(dev))
+                    logits = model(graph_to_device(batch.batch_graph, dev), batch.features.to(dev))
                     _, preds = logits.max(1)
 
                     if return_scores:

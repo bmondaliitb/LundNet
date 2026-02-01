@@ -4,9 +4,22 @@ import numpy as np
 from scipy import sparse
 from dgl import DGLGraph
 from dgl import backend as F
-from dgl.transform import pairwise_squared_distance
 
 '''copied from dgl.transform and fixed a bug'''
+
+import torch
+
+def pairwise_squared_distance(x: torch.Tensor) -> torch.Tensor:
+    """
+    Compute pairwise squared Euclidean distances.
+    x: (N, D)
+    returns: (N, N) where out[i,j] = ||x[i]-x[j]||^2
+    """
+    # ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a·b
+    x2 = (x * x).sum(dim=1, keepdim=True)          # (N,1)
+    dist2 = x2 + x2.transpose(0, 1) - 2.0 * (x @ x.transpose(0, 1))
+    return torch.clamp(dist2, min=0.0)
+
 
 
 def knn_graph(x, k):
