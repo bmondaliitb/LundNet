@@ -16,6 +16,7 @@ import os, time, datetime, argparse, pickle
 
 from lundnet.dgl_dataset import DGLGraphDatasetParticle, DGLGraphDatasetLund, collate_wrapper, collate_wrapper_tree
 from sklearn.metrics import roc_curve
+from scipy.integrate import trapezoid
 
 
 def graph_to_device(g, dev):
@@ -40,7 +41,8 @@ def bkg_rejection_at_threshold(signal_eff, background_eff, sig_eff=0.5):
 def ROC_area(signal_eff, background_eff):
     """Area under the ROC curve."""
     normal_order = signal_eff.argsort()
-    return np.trapz(background_eff[normal_order], signal_eff[normal_order])
+    #return np.trapz(background_eff[normal_order], signal_eff[normal_order])
+    return trapezoid(background_eff[normal_order], signal_eff[normal_order])
 
 
 def accuracy(preds, labels):
@@ -93,12 +95,13 @@ def main():
         print('Using %s, kt_min=%f and delta_min=%f' % (args.model, JetTree.ktmin, JetTree.deltamin))
 
     if args.demo:
-        args.train_sig = 'sample_WW_500GeV.json.gz'
-        args.train_bkg = 'sample_QCD_500GeV.json.gz'
-        args.val_sig = 'sample_WW_500GeV.json.gz'
-        args.val_bkg = 'sample_QCD_500GeV.json.gz'
-        args.test_sig = 'sample_WW_500GeV.json.gz'
-        args.test_bkg = 'sample_QCD_500GeV.json.gz'
+        file_dir="/mnt/nvme0n1p4/HEP/Work/phenomenology/lundnet-study/lundnet-repo/LundNet/"
+        args.train_sig = f'{file_dir}/sample_WW_500GeV.json.gz'
+        args.train_bkg = f'{file_dir}/sample_QCD_500GeV.json.gz'
+        args.val_sig = f'{file_dir}/sample_WW_500GeV.json.gz'
+        args.val_bkg = f'{file_dir}/sample_QCD_500GeV.json.gz'
+        args.test_sig = f'{file_dir}/sample_WW_500GeV.json.gz'
+        args.test_bkg = f'{file_dir}/sample_QCD_500GeV.json.gz'
 
     # training/testing mode
     if args.train_bkg and args.train_sig:
