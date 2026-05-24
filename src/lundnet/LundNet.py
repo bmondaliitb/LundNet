@@ -2,12 +2,12 @@
 
 from __future__ import print_function
 
-import dgl
 import torch
 import torch.nn as nn
 import numpy as np
 
 from lundnet.EdgeConv import EdgeConvBlock
+from lundnet.torch_graph import mean_pool
 
 
 class LundNet(nn.Module):
@@ -55,6 +55,5 @@ class LundNet(nn.Module):
         if self.use_fusion:
             fts = self.fusion_block(torch.cat(outputs, dim=1))
 
-        batch_graph.ndata['fts'] = fts
-        x = dgl.mean_nodes(batch_graph, 'fts')
+        x = mean_pool(fts, batch_graph.batch, len(batch_graph.num_nodes_per_graph))
         return self.fc(x)

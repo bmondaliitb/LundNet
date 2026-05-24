@@ -2,19 +2,17 @@
 
 from __future__ import print_function
 
-import dgl
-from dgl.transform import remove_self_loop
-from .dgl_utils import segmented_knn_graph
 import torch
 import torch.nn as nn
 import numpy as np
 
 from lundnet.EdgeConv import EdgeConvBlock
+from lundnet.torch_graph import GraphBatch, knn_edge_index, mean_pool
 
 
 class ParticleNet(nn.Module):
     r"""
-    DGL implementation of "ParticleNet: Jet Tagging via Particle Clouds" (https://arxiv.org/abs/1902.08570).
+    PyTorch graph implementation of "ParticleNet: Jet Tagging via Particle Clouds" (https://arxiv.org/abs/1902.08570).
     """
 
     def __init__(self,
@@ -55,18 +53,18 @@ class ParticleNet(nn.Module):
 
     def forward(self, batch_graph, features):
         g = batch_graph
-        segs = batch_graph.batch_num_nodes().cpu().numpy().tolist()
+        segs = batch_graph.batch_num_nodes().tolist()
         fts = self.bn_fts(features)
         outputs = []
         for idx, (k, conv) in enumerate(zip(self.k_neighbors, self.edge_convs)):
             if idx > 0:
-                g = remove_self_loop(segmented_knn_graph(fts, k + 1, segs)).to(features.device)
+                edge_index = knn_edge_index(fts, k, segs)
+                g = GraphBatch(edge_index=edge_index, batch=batch_graph.batch, num_nodes_per_graph=segs)
             fts = conv(g, fts)
             if self.use_fusion:
                 outputs.append(fts)
         if self.use_fusion:
             fts = self.fusion_block(torch.cat(outputs, dim=1))
 
-        batch_graph.ndata['fts'] = fts
-        x = dgl.mean_nodes(batch_graph, 'fts')
+        x = mean_pool(fts, batch_graph.batch, len(batch_graph.num_nodes_per_graph))
         return self.fc(x)

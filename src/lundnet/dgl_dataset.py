@@ -2,14 +2,12 @@
 
 from __future__ import print_function
 
-import dgl
-import networkx as nx
 import numpy as np
 
-from .dgl_utils import knn_graph
 from torch.utils.data import Dataset
 from .JetTree import JetTree, LundCoordinates
 from .read_data import Jets
+from .torch_graph import GraphData, batch_graphs, knn_edge_index, tree_edge_index
 import torch
 import torch.nn.functional as F
 import sys
@@ -32,53 +30,13 @@ groomer = None
 dump_number_of_nodes = False
 
 
-def _from_networkx_compat(nx_graph, node_attrs=None):
-    """Convert a NetworkX graph to a DGL graph across DGL versions."""
-    if hasattr(dgl, "from_networkx"):
-        return dgl.from_networkx(nx_graph, node_attrs=node_attrs or [])
-    try:
-        from dgl.convert import from_networkx as _from_networkx
-
-        return _from_networkx(nx_graph, node_attrs=node_attrs or [])
-    except Exception:
-        # Very old DGL: build graph then manually copy node attributes.
-        try:
-            dg = dgl.DGLGraph(nx_graph)
-        except Exception:
-            dg = dgl.DGLGraph()
-            dg.from_networkx(nx_graph)
-
-        if node_attrs:
-            for attr in node_attrs:
-                values = [nx_graph.nodes[i][attr] for i in range(nx_graph.number_of_nodes())]
-                arr = np.stack(values, axis=0)
-                dg.ndata[attr] = torch.tensor(arr, dtype=torch.float32)
-        return dg
-
-
-def remove_self_loop(g):
-    # Works for homogeneous graphs. (Most LundNet use-cases are homogeneous.)
-    u, v = g.edges()
-    mask = (u == v)
-    if mask.any():
-        eids = torch.nonzero(mask, as_tuple=False).squeeze(-1)
-        # different DGL versions expose different APIs:
-        if hasattr(dgl, "remove_edges"):
-            g = dgl.remove_edges(g, eids)
-        else:
-            # older versions sometimes have a method
-            g.remove_edges(eids)
-    return g
-
-
-
-class DGLGraphDatasetLund(Dataset):
+class TorchGraphDatasetLund(Dataset):
 
     fill_secondary = True
     node_coordinates = 'eta-phi'  # 'lund'
 
     def __init__(self, filepath_bkg, filepath_sig, nev=-1):
-        super(DGLGraphDatasetLund, self).__init__()
+        super(TorchGraphDatasetLund, self).__init__()
         print('Start loading dataset %s (bkg) and %s (sig)' % (filepath_bkg, filepath_sig))
         tic = time.process_time()
         reader_bkg = Jets(filepath_bkg, nev, groomer=groomer)
@@ -101,18 +59,20 @@ class DGLGraphDatasetLund(Dataset):
         self.label = torch.tensor(self.label, dtype=torch.float32)
 
     def _build_tree(self, root):
-        g = nx.Graph()
+        features = []
+        coordinates = []
+        edges = []
         jet_p4 = TLorentzVector(*root.node)
 
         def _rec_build(nid, node):
-            branches = [node.harder, node.softer] if DGLGraphDatasetLund.fill_secondary else [node.harder]
+            branches = [node.harder, node.softer] if TorchGraphDatasetLund.fill_secondary else [node.harder]
             for branch in branches:
                 if branch is None or branch.lundCoord is None:
                     # stop when reaching the leaf nodes
                     # we do not add the leaf nodes to the graph/tree as they do not have Lund coordinates
                     continue
-                cid = g.number_of_nodes()
-                if DGLGraphDatasetLund.node_coordinates == 'lund':
+                cid = len(features)
+                if TorchGraphDatasetLund.node_coordinates == 'lund':
                     spatialCoord = branch.lundCoord.state()[:2]
                 else:
                     node_p4 = TLorentzVector(*branch.node)
@@ -120,28 +80,34 @@ class DGLGraphDatasetLund(Dataset):
                         [delta_eta_reflect(node_p4, jet_p4),
                          node_p4.delta_phi(jet_p4)],
                         dtype='float32')
-                g.add_node(cid, coordinates=spatialCoord, features=branch.lundCoord.state())
-                g.add_edge(cid, nid)
+                coordinates.append(spatialCoord)
+                features.append(branch.lundCoord.state())
+                edges.append((cid, nid))
                 _rec_build(cid, branch)
         # add root
         if root.lundCoord is not None:
-            if DGLGraphDatasetLund.node_coordinates == 'lund':
+            if TorchGraphDatasetLund.node_coordinates == 'lund':
                 spatialCoord = root.lundCoord.state()[:2]
             else:
                 spatialCoord = np.zeros(2, dtype='float32')
-            g.add_node(0, coordinates=spatialCoord, features=root.lundCoord.state())
+            coordinates.append(spatialCoord)
+            features.append(root.lundCoord.state())
             _rec_build(0, root)
         else:
             # when a jet has only one particle (?)
-            g.add_node(0, coordinates=np.zeros(2, dtype='float32'),
-                       features=np.zeros(LundCoordinates.dimension, dtype='float32'))
-        ret = _from_networkx_compat(g, node_attrs=['coordinates', 'features'])
+            coordinates.append(np.zeros(2, dtype='float32'))
+            features.append(np.zeros(LundCoordinates.dimension, dtype='float32'))
+        ret = GraphData(
+            features=np.stack(features, axis=0),
+            coordinates=np.stack(coordinates, axis=0),
+            edge_index=tree_edge_index(edges, len(features)),
+        )
         # print(ret.number_of_nodes())
         return ret
 
     @property
     def num_features(self):
-        return self.data[0].ndata['features'].shape[1]
+        return self.data[0].features.shape[1]
 
     def __len__(self):
         return len(self.data)
@@ -152,10 +118,10 @@ class DGLGraphDatasetLund(Dataset):
         return x, y
 
 
-class DGLGraphDatasetParticle(Dataset):
+class TorchGraphDatasetParticle(Dataset):
 
     def __init__(self, filepath_bkg, filepath_sig, nev=-1):
-        super(DGLGraphDatasetParticle, self).__init__()
+        super(TorchGraphDatasetParticle, self).__init__()
         print('Start loading dataset %s (bkg) and %s (sig)' % (filepath_bkg, filepath_sig))
         tic = time.process_time()
         reader_bkg = Jets(filepath_bkg, nev, pseudojets=False, groomer=groomer)
@@ -193,17 +159,13 @@ class DGLGraphDatasetParticle(Dataset):
         spatialCoord = np.stack([delta_eta_reflect(constits_p4, jet_p4), constits_p4.delta_phi(jet_p4)], axis=1)
         energyFeatures = np.log(np.stack([constits_p4.pt, constits_p4.energy], axis=1))
         features = np.concatenate([spatialCoord, energyFeatures], axis=1)
-        ret = dgl.DGLGraph()
-        ret.add_nodes(
-            len(constits),
-            {'coordinates': torch.tensor(spatialCoord, dtype=torch.float32),
-             'features': torch.tensor(features, dtype=torch.float32)})
+        ret = GraphData(features=features, coordinates=spatialCoord)
         # print(ret.number_of_nodes())
         return ret
 
     @property
     def num_features(self):
-        return self.data[0].ndata['features'].shape[1]
+        return self.data[0].features.shape[1]
 
     def __len__(self):
         return len(self.data)
@@ -233,18 +195,24 @@ class _SimpleCustomBatch:
         graphs = []
         features = []
         for g in transposed_data[0]:
-            nng = remove_self_loop(knn_graph(g.ndata['coordinates'], min(g.number_of_nodes(), k + 1)))
-            if nng.number_of_nodes() < min_nodes:
-                nng.add_nodes(min_nodes - nng.number_of_nodes())
+            n_nodes = max(g.number_of_nodes(), min_nodes)
+            edge_index = knn_edge_index(g.coordinates, min(g.number_of_nodes() - 1, k))
+            coords = pad_array(g.coordinates, min_nodes, 0)
+            nng = GraphData(
+                features=torch.empty((n_nodes, 0), dtype=torch.float32),
+                coordinates=coords,
+                edge_index=edge_index,
+            )
             graphs.append(nng)
-            fts = pad_array(g.ndata['features'], min_nodes, 0)
+            fts = pad_array(g.features, min_nodes, 0)
             features.append(fts)
             assert(nng.number_of_nodes() == fts.shape[0])
-        self.batch_graph = dgl.batch(graphs)
+        self.batch_graph = batch_graphs(graphs)
         self.features = torch.cat(features, 0)
         self.label = torch.tensor(transposed_data[1])
 
     def pin_memory(self):
+        self.batch_graph = self.batch_graph.pin_memory()
         self.features = self.features.pin_memory()
         self.label = self.label.pin_memory()
         return self
@@ -258,12 +226,12 @@ class _LundTreeBatch:
 
     def __init__(self, data):
         transposed_data = list(zip(*data))
-        self.batch_graph = dgl.batch(transposed_data[0])
-        self.batch_graph.ndata.pop('coordinates')  # drop (eta, phi) coordinates
-        self.features = self.batch_graph.ndata.pop('features')
+        self.batch_graph = batch_graphs(transposed_data[0])
+        self.features = torch.cat([g.features for g in transposed_data[0]], 0)
         self.label = torch.tensor(transposed_data[1])
 
     def pin_memory(self):
+        self.batch_graph = self.batch_graph.pin_memory()
         self.features = self.features.pin_memory()
         self.label = self.label.pin_memory()
         return self
@@ -271,3 +239,8 @@ class _LundTreeBatch:
 
 def collate_wrapper_tree(batch):
     return _LundTreeBatch(batch)
+
+
+# Backwards-compatible names for older scripts that imported this module.
+DGLGraphDatasetLund = TorchGraphDatasetLund
+DGLGraphDatasetParticle = TorchGraphDatasetParticle

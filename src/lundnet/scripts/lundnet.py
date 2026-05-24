@@ -14,23 +14,18 @@ import tqdm
 from functools import partial
 import os, time, datetime, argparse, pickle
 
-from lundnet.dgl_dataset import DGLGraphDatasetParticle, DGLGraphDatasetLund, collate_wrapper, collate_wrapper_tree
+from lundnet.dgl_dataset import TorchGraphDatasetParticle, TorchGraphDatasetLund, collate_wrapper, collate_wrapper_tree
 from sklearn.metrics import roc_curve
 from scipy.integrate import trapezoid
 
 
 def graph_to_device(g, dev):
-    """Move a DGL graph to a torch device across DGL versions."""
+    """Move a batched torch graph to a device."""
     if dev is None or str(dev) == 'cpu':
         return g
     if hasattr(g, 'to'):
         return g.to(dev)
-    if hasattr(g, 'copy_to'):
-        return g.copy_to(dev)
-    raise RuntimeError(
-        "This DGL graph type does not support device transfer (missing .to/.copy_to). "
-        "Run with --device cpu or upgrade DGL."
-    )
+    raise RuntimeError("This graph batch does not support device transfer (missing .to).")
 
 
 def bkg_rejection_at_threshold(signal_eff, background_eff, sig_eff=0.5):
@@ -111,7 +106,7 @@ def main():
         training_mode = False
 
     # data format
-    DGLGraphDataset = DGLGraphDatasetLund if 'lund' in args.model else DGLGraphDatasetParticle
+    GraphDataset = TorchGraphDatasetLund if 'lund' in args.model else TorchGraphDatasetParticle
 
     # model parameter
     if args.model == 'particlenet':
@@ -154,15 +149,15 @@ def main():
 
     # load data
     if training_mode:
-        train_data = DGLGraphDataset(args.train_bkg, args.train_sig, nev=args.nev)
-        val_data = DGLGraphDataset(args.val_bkg, args.val_sig, nev=args.nev_val)
+        train_data = GraphDataset(args.train_bkg, args.train_sig, nev=args.nev)
+        val_data = GraphDataset(args.val_bkg, args.val_sig, nev=args.nev_val)
         train_loader = DataLoader(train_data, num_workers=args.num_workers, batch_size=args.batch_size,
                                   collate_fn=collate_fn, shuffle=True, drop_last=True, pin_memory=True)
         val_loader = DataLoader(val_data, num_workers=args.num_workers, batch_size=args.batch_size,
                                 collate_fn=collate_fn, shuffle=False, drop_last=True, pin_memory=True)
         input_dims = train_data.num_features
     else:
-        test_data = DGLGraphDataset(args.test_bkg, args.test_sig, nev=args.nev_test)
+        test_data = GraphDataset(args.test_bkg, args.test_sig, nev=args.nev_test)
         test_loader = DataLoader(test_data, num_workers=args.num_workers, batch_size=args.batch_size,
                                  collate_fn=collate_fn, shuffle=False, drop_last=False, pin_memory=True)
         input_dims = test_data.num_features
@@ -288,7 +283,7 @@ def main():
 
     if training_mode:
         del train_data, train_loader, val_data, val_loader
-        test_data = DGLGraphDataset(args.test_bkg, args.test_sig, args.nev_test)
+        test_data = GraphDataset(args.test_bkg, args.test_sig, args.nev_test)
         test_loader = DataLoader(test_data, num_workers=args.num_workers, batch_size=args.batch_size,
                                  collate_fn=collate_fn, shuffle=False, drop_last=False, pin_memory=True)
 

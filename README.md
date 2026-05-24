@@ -29,9 +29,9 @@ We recommend the installation of the LundNet package using a `miniconda3`
 environment with the
 [configuration specified here](https://github.com/fdreyer/LundNet/blob/master/environment.yml).
 
-LundNet requires the following python 3 packages:
+LundNet uses plain PyTorch tensors for graph batching and message passing, so no
+DGL install is required. It requires the following python 3 packages:
 - torch
-- dgl
 - numpy
 - [fastjet](http://fastjet.fr/) (compiled with --enable-pyext)
 - pandas
